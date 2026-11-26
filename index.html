@@ -140,8 +140,9 @@ const map = L.map('map', {zoomControl: false, minZoom: 3, maxZoom: 12, worldCopy
 map.createPane('wx').style.zIndex = 350;
 map.createPane('lbl').style.zIndex = 450;
 map.getPane('lbl').style.pointerEvents = 'none';
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_nolabels/{z}/{x}/{y}{r}.png', {subdomains: 'abcd', maxZoom: 12, attribution: '© OpenStreetMap © CARTO'}).addTo(map);
-L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_only_labels/{z}/{x}/{y}{r}.png', {subdomains: 'abcd', maxZoom: 12, pane: 'lbl'}).addTo(map);
+const ESRI = 'https://server.arcgisonline.com/ArcGIS/rest/services/Canvas/';
+L.tileLayer(ESRI + 'World_Dark_Gray_Base/MapServer/tile/{z}/{y}/{x}', {maxZoom: 12, attribution: 'Esri, HERE, Garmin, © OpenStreetMap'}).addTo(map);
+L.tileLayer(ESRI + 'World_Dark_Gray_Reference/MapServer/tile/{z}/{y}/{x}', {maxZoom: 12, pane: 'lbl'}).addTo(map);
 map.attributionControl.setPrefix(false);
 map.attributionControl.setPosition('topleft');
 map.attributionControl.addAttribution('Radar & HRRR: NWS/NOAA via Iowa Env. Mesonet · Forecast: Open-Meteo');
@@ -215,11 +216,71 @@ function paintTrack() {
   $('#ticks').innerHTML = ticks.join('');
 }
 
+/* ---------- radar clutter filter ----------
+   NEXRAD n0q tiles include clear-air/ground returns below ~10 dBZ.
+   Map each colour to the nearest entry of IEM's n0q ramp (index*0.5-32 = dBZ),
+   drop anything under MIN_DBZ, then drop isolated speckle pixels. */
+const MIN_IDX = (10 + 32) / 0.5;
+let ramp = null;
+const colIdx = new Map();
+const rampP = new Promise(res => {
+  const i = new Image(); i.crossOrigin = 'anonymous';
+  i.onload = () => {
+    try { const c = document.createElement('canvas'); c.width = i.width; c.height = i.height; const x = c.getContext('2d'); x.drawImage(i, 0, 0); ramp = x.getImageData(Math.floor(i.width * 0.66), 0, 1, 256).data; } catch (e) {}
+    res();
+  };
+  i.onerror = () => res();
+  i.src = `${IEM}/docs/nexrad_mosaic/n0q_ramp.png`;
+});
+function rampIdx(r, g, b) {
+  let bi = 0, bd = 1e9;
+  for (let k = 1; k < 256; k++) { const dr = ramp[k * 4] - r, dg = ramp[k * 4 + 1] - g, db = ramp[k * 4 + 2] - b, dd = dr * dr + dg * dg + db * db; if (dd < bd) { bd = dd; bi = k; } }
+  return bi;
+}
+function declutter(ctx) {
+  const im = ctx.getImageData(0, 0, 256, 256), d = im.data, keep = new Uint8Array(65536);
+  for (let p = 0, i = 0; p < 65536; p++, i += 4) {
+    if (!d[i + 3]) continue;
+    const key = (d[i] << 16) | (d[i + 1] << 8) | d[i + 2];
+    let v = colIdx.get(key);
+    if (v === undefined) { v = rampIdx(d[i], d[i + 1], d[i + 2]) >= MIN_IDX ? 1 : 0; colIdx.set(key, v); }
+    keep[p] = v;
+  }
+  for (let y = 0; y < 256; y++) for (let x = 0; x < 256; x++) {
+    const p = y * 256 + x;
+    if (!keep[p]) { d[p * 4 + 3] = 0; continue; }
+    let n = 0;
+    for (let dy = -1; dy <= 1; dy++) for (let dx = -1; dx <= 1; dx++) {
+      if (!dy && !dx) continue;
+      const yy = y + dy, xx = x + dx;
+      if (yy < 0 || yy > 255 || xx < 0 || xx > 255 || keep[yy * 256 + xx]) n++;
+    }
+    if (n < 3) d[p * 4 + 3] = 0;
+  }
+  ctx.putImageData(im, 0, 0);
+}
+const RadarLayer = L.GridLayer.extend({
+  createTile(co, done) {
+    const c = document.createElement('canvas'); c.width = c.height = 256;
+    const img = new Image(); img.crossOrigin = 'anonymous';
+    img.onload = async () => {
+      await rampP;
+      const x = c.getContext('2d'); x.drawImage(img, 0, 0);
+      if (ramp) { try { declutter(x); } catch (e) {} }
+      done(null, c);
+    };
+    img.onerror = () => done(new Error('tile'), c);
+    img.src = L.Util.template(this.options.url, co);
+    return c;
+  }
+});
+
 /* ---------- tile layers (radar + HRRR) ---------- */
 function tl(key) {
   let l = layers.get(key);
   if (!l) {
-    l = L.tileLayer(`${IEM}/cache/tile.py/1.0.0/${key}/{z}/{x}/{y}.png?_=${stamp}`, {pane: 'wx', opacity: 0, maxNativeZoom: 10, maxZoom: 12, keepBuffer: 1, updateWhenZooming: false});
+    const url = `${IEM}/cache/tile.py/1.0.0/${key}/{z}/{x}/{y}.png?_=${stamp}`, o = {pane: 'wx', opacity: 0, maxNativeZoom: 10, maxZoom: 12, keepBuffer: 1, updateWhenZooming: false};
+    l = key.startsWith('nexrad') ? new RadarLayer({...o, url}) : L.tileLayer(url, o);
     l.ready = false;
     l.on('loading', () => { l.ready = false; });
     l.on('load', () => { l.ready = true; });
