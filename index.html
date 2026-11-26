@@ -106,7 +106,7 @@ button{font:inherit;color:inherit;cursor:pointer}
     <input id="q" type="search" placeholder="Search a place" autocomplete="off" enterkeyhint="search" aria-label="Search a place">
     <div id="results" class="glass" hidden></div>
   </div>
-  <button id="drops" class="ibtn glass" aria-label="Animated rain and snow" aria-pressed="true" title="Animated rain & snow">
+  <button id="drops" class="ibtn glass" aria-label="Rain and snow icons" aria-pressed="true" title="Rain & snow icons">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3c3 4 5 6.5 5 9.5a5 5 0 0 1-10 0C7 9.5 9 7 12 3z"/></svg>
   </button>
   <button id="locate" class="ibtn glass" aria-label="Use my location">
@@ -566,13 +566,13 @@ $('#locate').onclick = () => {
 
 /* ---------- events ---------- */
 map.on('click', e => { $('#results').hidden = true; point(e.latlng.lat, e.latlng.lng); });
-map.on('zoomstart', () => { wx.style.visibility = 'hidden'; fxPause = true; });
-map.on('movestart', () => { fxPause = true; });
+map.on('zoomstart', () => { wx.style.visibility = 'hidden'; fxPause = true; drawIcons(); });
+map.on('movestart', () => { fxPause = true; drawIcons(); });
 let mt = null;
 map.on('moveend', () => {
   if (frames[cur] && frames[cur].k === 'model') { wx.style.visibility = 'visible'; drawModel(frames[cur].t); }
   clearTimeout(mt); mt = setTimeout(fetchGrid, 500); save();
-  fxPause = false; fxDirty = true; fxReset = true;
+  fxPause = false; fxDirty = true;
 });
 map.on('resize', () => { if (frames[cur] && frames[cur].k === 'model') drawModel(frames[cur].t); });
 slider.addEventListener('input', () => { setPlay(false); go(+slider.value); });
@@ -601,21 +601,19 @@ setInterval(() => { if (!document.hidden) refresh(); }, 10 * 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastRefresh > 8 * 60e3) refresh(); });
 
 
-/* ---------- animated precipitation ----------
+/* ---------- precipitation icons ----------
    Reads what's actually drawn (radar/HRRR tile canvases or the model canvas)
-   into a coarse mask, then spawns streaks/flakes only where it's wet.
-   Density and speed scale with intensity; type comes from the model grid. */
+   into a coarse mask; type (rain/snow/ice) comes from the model grid. */
 const fx = $('#fx'), fctx = fx.getContext('2d');
 const MS = 6, mask = document.createElement('canvas'), mctx = mask.getContext('2d', {willReadFrequently: true});
-let fxOn = !matchMedia('(prefers-reduced-motion: reduce)').matches, fxDirty = true, fxPause = false, fxReset = false, fxLast = 0, fxBuilt = 0;
-try { if (localStorage.getItem('radar24-fx') === '0') fxOn = false; } catch (e) {}
+let fxOn = true, fxDirty = true, fxPause = false, fxReset = false, fxBuilt = 0;
+try { if (localStorage.getItem('radar24-icons') === '0') fxOn = false; } catch (e) {}
 let wetIdx = new Int32Array(0), wetI = new Float32Array(0), wetN = 0, MW = 0, MH = 0, DPR = 1;
-const parts = [], splashes = [];
 $('#drops').setAttribute('aria-pressed', fxOn);
 $('#drops').onclick = () => {
   fxOn = !fxOn; $('#drops').setAttribute('aria-pressed', fxOn);
-  try { localStorage.setItem('radar24-fx', fxOn ? '1' : '0'); } catch (e) {}
-  if (!fxOn) fctx.clearRect(0, 0, fx.width, fx.height); else { fxDirty = true; requestAnimationFrame(loop); }
+  try { localStorage.setItem('radar24-icons', fxOn ? '1' : '0'); } catch (e) {}
+  fxDirty = true;
 };
 function sizeFx() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
@@ -635,7 +633,7 @@ function intensityOf(r, g, b) {
   if (h >= 345 || h < 20) return 0.85;                               // red
   if (h < 70) return g > 170 ? 0.6 : 0.72;                           // yellow → orange
   if (h < 165) return 0.32 + (1 - g / 255) * 0.25;                   // greens (darker = heavier)
-  return 0.22;                                                       // blues / cyan
+  return 0.2 + Math.max(0, Math.min(1, (h - 195) / 70)) * 0.65;      // blues → purples (snow ramps)
 }
 function buildMask() {
   const size = map.getSize(); MW = Math.ceil(size.x / MS); MH = Math.ceil(size.y / MS);
@@ -673,64 +671,72 @@ function typeAt(cx, cy, T) {
   const a = Math.max(0, Math.min(d.c.length - 1, Math.round((T / 1000 - (d.t0 - 1800)) / 3600)));
   return ptype(d.c[a]);
 }
-function spawn(p) {
-  for (let tries = 0; tries < 8; tries++) {
-    const n = (Math.random() * wetN) | 0, I = wetI[n];
-    if (Math.random() > I + 0.15) continue;
-    const cell = wetIdx[n], cx = (cell % MW + Math.random()) * MS, cy = (((cell / MW) | 0) + Math.random()) * MS;
-    const ty = typeAt(cx, cy, frames[cur].t);
-    p.x = cx; p.y = cy; p.I = I; p.ty = ty; p.age = 0;
-    if (ty === 1) { p.life = 1.6 + Math.random() * 1.6; p.vy = 26 + I * 30 + Math.random() * 14; p.r = 1 + Math.random() * 1.3 + I; p.ph = Math.random() * 6.28; }
-    else if (ty === 2) { p.life = 0.35 + Math.random() * 0.3; p.vy = 240 + I * 120; p.r = 1.2; }
-    else { p.life = 0.22 + Math.random() * 0.28; p.vy = 380 + I * 520 + Math.random() * 120; p.len = 9 + I * 16; }
-    p.y -= p.vy * p.life * 0.5;
-    return true;
-  }
-  p.life = 0; return false;
+/* weather-app style icons: a fixed lattice in world pixels (so icons stay put while
+   frames change); each cell shows 1/2/3 drops for light/moderate/heavy, or flakes / pellets */
+const S = 46;
+function dropPath(x, y, r) {
+  fctx.beginPath();
+  fctx.moveTo(x, y - r * 1.55);
+  fctx.bezierCurveTo(x + r * 0.35, y - r * 0.9, x + r, y - r * 0.35, x + r, y + r * 0.2);
+  fctx.arc(x, y + r * 0.2, r, 0, Math.PI);
+  fctx.bezierCurveTo(x - r, y - r * 0.35, x - r * 0.35, y - r * 0.9, x, y - r * 1.55);
+  fctx.closePath();
 }
-function loop(ts) {
-  if (!fxOn) return;
-  requestAnimationFrame(loop);
-  const dt = Math.min(0.05, (ts - fxLast) / 1000 || 0); fxLast = ts;
-  if (document.hidden) return;
+function drawDrop(x, y, r) {
+  dropPath(x, y, r);
+  fctx.fillStyle = 'rgba(232,243,255,.95)'; fctx.fill();
+  fctx.lineWidth = 1.4; fctx.strokeStyle = 'rgba(8,16,28,.75)'; fctx.stroke();
+}
+function drawFlake(x, y, r) {
+  for (const [w, c] of [[3.6, 'rgba(8,16,28,.75)'], [1.6, 'rgba(240,246,255,.98)']]) {
+    fctx.lineWidth = w; fctx.strokeStyle = c; fctx.beginPath();
+    for (let k = 0; k < 3; k++) { const an = k * Math.PI / 3 + Math.PI / 2, dx = Math.cos(an) * r, dy = Math.sin(an) * r; fctx.moveTo(x - dx, y - dy); fctx.lineTo(x + dx, y + dy); }
+    fctx.stroke();
+  }
+}
+function drawPellet(x, y, r) {
+  fctx.beginPath(); fctx.moveTo(x, y - r); fctx.lineTo(x + r * 0.8, y); fctx.lineTo(x, y + r); fctx.lineTo(x - r * 0.8, y); fctx.closePath();
+  fctx.fillStyle = 'rgba(255,214,236,.97)'; fctx.fill();
+  fctx.lineWidth = 1.4; fctx.strokeStyle = 'rgba(40,8,24,.75)'; fctx.stroke();
+}
+const LAYOUT = [[[0, 0]], [[-5, -2], [5, 3]], [[-7, 3], [0, -5], [7, 3]]];
+function drawIcons() {
   fctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   fctx.clearRect(0, 0, innerWidth, innerHeight);
-  if (fxPause) return;
-  if (fxDirty && ts - fxBuilt > 140) { fxDirty = false; fxBuilt = ts; buildMask(); if (fxReset) { parts.length = 0; splashes.length = 0; fxReset = false; } }
-  const z = map.getZoom(), want = Math.min(innerWidth < 600 ? 650 : 1100, Math.round(wetN * (z >= 9 ? 0.5 : z >= 7 ? 0.32 : 0.2)));
-  while (parts.length < want) { const p = {}; if (!spawn(p)) break; p.age = Math.random() * p.life; parts.push(p); }
-  if (parts.length > want) parts.length = want;
-  const mr = map.getContainer().getBoundingClientRect(), ox = mr.left, oy = mr.top;
-  fctx.lineCap = 'round';
-  for (const p of parts) {
-    p.age += dt;
-    if (p.age >= p.life) {
-      if (p.ty === 0 && p.I > 0.3 && Math.random() < 0.35 && splashes.length < 160) splashes.push({x: p.x, y: p.y, a: 0, I: p.I});
-      if (!wetN || !spawn(p)) continue;
-    }
-    const f = p.age / p.life, fade = Math.min(1, f * 5, (1 - f) * 4);
-    p.y += p.vy * dt;
-    if (p.ty === 1) {
-      const sx = p.x + Math.sin(p.ph + p.age * 2.2) * 4;
-      fctx.fillStyle = `rgba(235,242,255,${0.85 * fade})`;
-      fctx.beginPath(); fctx.arc(ox + sx, oy + p.y, p.r, 0, 6.283); fctx.fill();
-    } else if (p.ty === 2) {
-      fctx.fillStyle = `rgba(255,200,230,${0.9 * fade})`;
-      fctx.fillRect(ox + p.x - 1, oy + p.y - 1, 2.2, 2.2);
-    } else {
-      p.x -= p.vy * 0.12 * dt;
-      fctx.strokeStyle = `rgba(200,225,255,${(0.5 + p.I * 0.45) * fade})`;
-      fctx.lineWidth = 1 + p.I * 1.1;
-      fctx.beginPath(); fctx.moveTo(ox + p.x, oy + p.y); fctx.lineTo(ox + p.x + p.len * 0.12, oy + p.y - p.len); fctx.stroke();
+  if (!fxOn || fxPause || !wetN || !frames[cur]) return;
+  const size = map.getSize(), mr = map.getContainer().getBoundingClientRect();
+  const o = map.containerPointToLayerPoint([0, 0]).add(map.getPixelOrigin());
+  const wet = new Float32Array(MW * MH).fill(-1);
+  for (let n = 0; n < wetN; n++) wet[wetIdx[n]] = wetI[n];
+  const T = frames[cur].t, R = Math.max(1, Math.round(S * 0.32 / MS));
+  for (let wy = Math.floor(o.y / S) * S; wy < o.y + size.y + S; wy += S) {
+    const shift = (Math.round(wy / S) & 1) ? S / 2 : 0;
+    for (let wxp = Math.floor(o.x / S) * S - S; wxp < o.x + size.x + S; wxp += S) {
+      const cx = wxp + shift - o.x, cy = wy - o.y;
+      if (cx < -10 || cy < -10 || cx > size.x + 10 || cy > size.y + 10) continue;
+      const mx = Math.round(cx / MS), my = Math.round(cy / MS);
+      let hit = 0, tot = 0, sum = 0;
+      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
+        const xx = mx + dx, yy = my + dy; if (xx < 0 || yy < 0 || xx >= MW || yy >= MH) continue;
+        tot++; const v = wet[yy * MW + xx]; if (v >= 0) { hit++; sum += v; }
+      }
+      if (!tot || hit / tot < 0.4) continue;
+      const I = sum / hit, lvl = I < 0.4 ? 0 : I < 0.7 ? 1 : 2;
+      const ty = typeAt(cx, cy, T), x = mr.left + cx, y = mr.top + cy;
+      for (const [dx, dy] of LAYOUT[lvl]) {
+        if (ty === 1) drawFlake(x + dx * 1.2, y + dy * 1.2, lvl ? 5.5 : 6.5);
+        else if (ty === 2) drawPellet(x + dx, y + dy, 4.5);
+        else drawDrop(x + dx, y + dy, lvl ? 3.6 : 4.4);
+      }
     }
   }
-  fctx.lineWidth = 1;
-  for (let i = splashes.length - 1; i >= 0; i--) {
-    const s = splashes[i]; s.a += dt * 4;
-    if (s.a >= 1) { splashes.splice(i, 1); continue; }
-    fctx.strokeStyle = `rgba(200,225,255,${0.55 * (1 - s.a)})`;
-    fctx.beginPath(); fctx.ellipse(ox + s.x, oy + s.y, 1 + s.a * 5, 0.5 + s.a * 2, 0, 0, 6.283); fctx.stroke();
-  }
+}
+function loop(ts) {
+  requestAnimationFrame(loop);
+  if (document.hidden || !fxDirty || ts - fxBuilt < 120) return;
+  fxDirty = false; fxBuilt = ts;
+  if (fxOn && !fxPause) buildMask();
+  drawIcons();
 }
 requestAnimationFrame(loop);
 
