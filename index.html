@@ -81,8 +81,10 @@ button{font:inherit;color:inherit;cursor:pointer}
 .lg .s{background:linear-gradient(90deg,#93c5fd,#3b82f6,#8b5cf6)}
 .lg .z{background:linear-gradient(90deg,#f9a8d4,#ec4899,#9d174d)}
 #status{margin-left:auto;white-space:nowrap}
+.legm{display:flex;align-items:center;gap:12px;flex-wrap:wrap;color:var(--ink)}
+.legm[hidden]{display:none}
+#colorbtn[aria-pressed=true]{background:var(--ink);color:#0b0f14}
 #fx{position:fixed;inset:0;z-index:500;pointer-events:none}
-#drops[aria-pressed=false]{opacity:.5}
 #psum{font-size:17px;font-weight:600;color:var(--ink);margin:4px 0 0}
 #pdet{color:var(--dim);font-size:13px;margin:2px 0 10px;min-height:18px}
 #psum svg{vertical-align:-3px;margin-right:6px}
@@ -106,8 +108,8 @@ button{font:inherit;color:inherit;cursor:pointer}
     <input id="q" type="search" placeholder="Search a place" autocomplete="off" enterkeyhint="search" aria-label="Search a place">
     <div id="results" class="glass" hidden></div>
   </div>
-  <button id="drops" class="ibtn glass" aria-label="Rain and snow icons" aria-pressed="true" title="Rain & snow icons">
-    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 3c3 4 5 6.5 5 9.5a5 5 0 0 1-10 0C7 9.5 9 7 12 3z"/></svg>
+  <button id="colorbtn" class="ibtn glass" aria-label="Show colour radar" aria-pressed="false" title="Colour radar">
+    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linejoin="round"><path d="M12 3 2 8.5 12 14l10-5.5z"/><path d="m2 15.5 10 5.5 10-5.5"/></svg>
   </button>
   <button id="locate" class="ibtn glass" aria-label="Use my location">
     <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round"><circle cx="12" cy="12" r="4"/><path d="M12 2v3M12 19v3M2 12h3M19 12h3"/></svg>
@@ -132,8 +134,16 @@ button{font:inherit;color:inherit;cursor:pointer}
     </div>
     <div id="sw"><input id="slider" type="range" min="0" max="1" value="0" step="1" aria-label="Time"><div id="ticks"></div></div>
     <div class="foot">
-      <span class="scale"><i></i><span><b style="font-weight:500">Light</b><b style="font-weight:500">Moderate</b><b style="font-weight:500">Heavy</b></span></span>
-      <span class="lg"><i class="dot" style="background:#60a5fa"></i>Snow</span><span class="lg"><i class="dot" style="background:#ec4899"></i>Ice</span>
+      <span id="legM" class="legm">
+        <span class="lg"><svg width="22" height="16" viewBox="0 0 22 16" stroke="#e1eeff" stroke-linecap="round"><path d="M6 13 8 3M15 15l2-10" stroke-width="1.2" opacity=".7"/></svg>Light</span>
+        <span class="lg"><svg width="22" height="16" viewBox="0 0 22 16" stroke="#fff" stroke-linecap="round" stroke-width="2.2"><path d="M2 15 5 1M7 15l3-14M12 15l3-14M17 15l3-14"/></svg>Heavy</span>
+        <span class="lg"><svg width="16" height="16" viewBox="0 0 24 24" stroke="#fff" stroke-width="2.2" stroke-linecap="round"><path d="M12 2v20M3.5 7l17 10M3.5 17l17-10"/></svg>Snow</span>
+        <span class="lg"><svg width="14" height="16" viewBox="0 0 14 18" fill="#fff"><path d="M8 0 1 10h5l-2 8 9-11H8l2-7z"/></svg>Storms</span>
+      </span>
+      <span id="legC" class="legm" hidden>
+        <span class="scale"><i></i><span><b style="font-weight:500">Light</b><b style="font-weight:500">Moderate</b><b style="font-weight:500">Heavy</b></span></span>
+        <span class="lg"><i class="dot" style="background:#60a5fa"></i>Snow</span><span class="lg"><i class="dot" style="background:#ec4899"></i>Ice</span>
+      </span>
       <span id="status"></span>
     </div>
   </section>
@@ -566,8 +576,7 @@ $('#locate').onclick = () => {
 
 /* ---------- events ---------- */
 map.on('click', e => { $('#results').hidden = true; point(e.latlng.lat, e.latlng.lng); });
-map.on('zoomstart', () => { wx.style.visibility = 'hidden'; fxPause = true; drawIcons(); });
-map.on('movestart', () => { fxPause = true; drawIcons(); });
+map.on('zoomstart', () => { wx.style.visibility = 'hidden'; fxPause = true; });
 let mt = null;
 map.on('moveend', () => {
   if (frames[cur] && frames[cur].k === 'model') { wx.style.visibility = 'visible'; drawModel(frames[cur].t); }
@@ -601,20 +610,32 @@ setInterval(() => { if (!document.hidden) refresh(); }, 10 * 60e3);
 document.addEventListener('visibilitychange', () => { if (!document.hidden && Date.now() - lastRefresh > 8 * 60e3) refresh(); });
 
 
-/* ---------- precipitation icons ----------
-   Reads what's actually drawn (radar/HRRR tile canvases or the model canvas)
-   into a coarse mask; type (rain/snow/ice) comes from the model grid. */
+/* ---------- precipitation motion layer ----------
+   Reads what's actually drawn (radar / HRRR tile canvases or the model canvas) into a
+   coarse intensity mask. Intensity is carried by motion and brightness, not hue, so it
+   reads for colour-blind eyes: a soft white haze (brighter = heavier), streaks whose
+   density, speed and length scale with intensity, flakes for snow, pellets for ice, and
+   lightning over storm cells. The colour radar is an optional layer underneath. */
 const fx = $('#fx'), fctx = fx.getContext('2d');
 const MS = 6, mask = document.createElement('canvas'), mctx = mask.getContext('2d', {willReadFrequently: true});
-let fxOn = true, fxDirty = true, fxPause = false, fxReset = false, fxBuilt = 0;
-try { if (localStorage.getItem('radar24-icons') === '0') fxOn = false; } catch (e) {}
-let wetIdx = new Int32Array(0), wetI = new Float32Array(0), wetN = 0, MW = 0, MH = 0, DPR = 1;
-$('#drops').setAttribute('aria-pressed', fxOn);
-$('#drops').onclick = () => {
-  fxOn = !fxOn; $('#drops').setAttribute('aria-pressed', fxOn);
-  try { localStorage.setItem('radar24-icons', fxOn ? '1' : '0'); } catch (e) {}
-  fxDirty = true;
+const haze = document.createElement('canvas'), hctx = haze.getContext('2d');
+const reduce = matchMedia('(prefers-reduced-motion: reduce)').matches;
+let showColor = false, fxDirty = true, fxPause = false, fxBuilt = 0, fxLast = 0;
+try { showColor = localStorage.getItem('radar24-color') === '1'; } catch (e) {}
+let wetIdx = new Int32Array(0), wetI = new Float32Array(0), wetW = new Float32Array(0), wetT = new Uint8Array(0), wetN = 0;
+let stormIdx = new Int32Array(0), stormN = 0, MW = 0, MH = 0, DPR = 1, want = 0;
+let anchor = null, buildZoom = -1;
+const parts = [], splashes = [], bolts = [];
+function applyMode() {
+  map.getPane('wx').style.opacity = showColor ? 1 : 0;
+  $('#colorbtn').setAttribute('aria-pressed', showColor);
+  $('#legC').hidden = !showColor; $('#legM').hidden = showColor;
+}
+$('#colorbtn').onclick = () => {
+  showColor = !showColor; applyMode();
+  try { localStorage.setItem('radar24-color', showColor ? '1' : '0'); } catch (e) {}
 };
+applyMode();
 function sizeFx() {
   DPR = Math.min(2, window.devicePixelRatio || 1);
   fx.width = innerWidth * DPR; fx.height = innerHeight * DPR;
@@ -635,10 +656,22 @@ function intensityOf(r, g, b) {
   if (h < 165) return 0.32 + (1 - g / 255) * 0.25;                   // greens (darker = heavier)
   return 0.2 + Math.max(0, Math.min(1, (h - 195) / 70)) * 0.65;      // blues → purples (snow ramps)
 }
-function buildMask() {
+function rebuild() {
+  // carry live particles over into the new frame of reference
+  const z = map.getZoom();
+  if (anchor && z === buildZoom) {
+    const cp = map.latLngToContainerPoint(anchor);
+    for (const q of [parts, splashes, bolts]) for (const o of q) {
+      o.x += cp.x; o.y += cp.y;
+      if (o.pts) { for (const pt of o.pts) { pt[0] += cp.x; pt[1] += cp.y; } for (const pt of o.branch.slice(1)) { pt[0] += cp.x; pt[1] += cp.y; } }
+    }
+  } else { parts.length = 0; splashes.length = 0; bolts.length = 0; }
+  anchor = map.containerPointToLatLng([0, 0]); buildZoom = z;
+
   const size = map.getSize(); MW = Math.ceil(size.x / MS); MH = Math.ceil(size.y / MS);
-  if (mask.width !== MW || mask.height !== MH) { mask.width = MW; mask.height = MH; }
+  if (mask.width !== MW || mask.height !== MH) { mask.width = MW; mask.height = MH; haze.width = MW; haze.height = MH; }
   mctx.clearRect(0, 0, MW, MH);
+  wetN = 0; stormN = 0; want = 0;
   const fr = frames[cur]; if (!fr) return;
   const mr = map.getContainer().getBoundingClientRect();
   try {
@@ -655,90 +688,133 @@ function buildMask() {
       }
     }
   } catch (e) {}
-  let d; try { d = mctx.getImageData(0, 0, MW, MH).data; } catch (e) { wetN = 0; return; }
-  if (wetIdx.length < MW * MH) { wetIdx = new Int32Array(MW * MH); wetI = new Float32Array(MW * MH); }
-  wetN = 0;
-  for (let p = 0, i = 0; p < MW * MH; p++, i += 4) {
+  let d; try { d = mctx.getImageData(0, 0, MW, MH).data; } catch (e) { return; }
+  const N = MW * MH;
+  if (wetIdx.length < N) { wetIdx = new Int32Array(N); wetI = new Float32Array(N); wetW = new Float32Array(N); wetT = new Uint8Array(N); stormIdx = new Int32Array(N); }
+  // model weather codes per cell (precip type + thunder flag)
+  const g = grid, Ts = fr.t / 1000, rowI = new Int32Array(MH), colJ = new Int32Array(MW);
+  if (g) {
+    for (let y = 0; y < MH; y++) rowI[y] = Math.round(map.containerPointToLatLng([0, (y + 0.5) * MS]).lat / g.s);
+    for (let x = 0; x < MW; x++) colJ[x] = Math.round(map.containerPointToLatLng([(x + 0.5) * MS, 0]).lng / g.s);
+  }
+  const hz = hctx.createImageData(MW, MH), hp = hz.data, A = new Float32Array(N), B = new Float32Array(N);
+  for (let p = 0, i = 0; p < N; p++, i += 4) {
     if (d[i + 3] < 60) continue;
-    wetIdx[wetN] = p; wetI[wetN] = intensityOf(d[i], d[i + 1], d[i + 2]); wetN++;
+    const I = intensityOf(d[i], d[i + 1], d[i + 2]);
+    let code = 0;
+    if (g) {
+      const c = cache.get(`${g.sk}|${rowI[(p / MW) | 0]}|${colJ[p % MW]}`);
+      if (c) code = c.c[Math.max(0, Math.min(c.c.length - 1, Math.round((Ts - (c.t0 - 1800)) / 3600)))];
+    }
+    const ty = ptype(code), storm = I >= 0.85 || (code >= 95 && I >= 0.45);
+    wetIdx[wetN] = p; wetI[wetN] = I; wetW[wetN] = Math.pow(I, 1.6) * (ty === 1 ? 0.6 : 1.4); wetT[wetN] = ty; want += wetW[wetN]; wetN++;
+    if (storm) stormIdx[stormN++] = p;
+    A[p] = 26 + I * 84 + (storm ? 26 : 0);
   }
-}
-function typeAt(cx, cy, T) {
-  const g = grid; if (!g) return 0;
-  const ll = map.containerPointToLatLng([cx, cy]);
-  const d = cache.get(`${g.sk}|${Math.round(ll.lat / g.s)}|${Math.round(ll.lng / g.s)}`);
-  if (!d) return 0;
-  const a = Math.max(0, Math.min(d.c.length - 1, Math.round((T / 1000 - (d.t0 - 1800)) / 3600)));
-  return ptype(d.c[a]);
-}
-/* weather-app style icons: a fixed lattice in world pixels (so icons stay put while
-   frames change); each cell shows 1/2/3 drops for light/moderate/heavy, or flakes / pellets */
-const S = 46;
-function dropPath(x, y, r) {
-  fctx.beginPath();
-  fctx.moveTo(x, y - r * 1.55);
-  fctx.bezierCurveTo(x + r * 0.35, y - r * 0.9, x + r, y - r * 0.35, x + r, y + r * 0.2);
-  fctx.arc(x, y + r * 0.2, r, 0, Math.PI);
-  fctx.bezierCurveTo(x - r, y - r * 0.35, x - r * 0.35, y - r * 0.9, x, y - r * 1.55);
-  fctx.closePath();
-}
-function drawDrop(x, y, r) {
-  dropPath(x, y, r);
-  fctx.fillStyle = 'rgba(232,243,255,.95)'; fctx.fill();
-  fctx.lineWidth = 1.4; fctx.strokeStyle = 'rgba(8,16,28,.75)'; fctx.stroke();
-}
-function drawFlake(x, y, r) {
-  for (const [w, c] of [[3.6, 'rgba(8,16,28,.75)'], [1.6, 'rgba(240,246,255,.98)']]) {
-    fctx.lineWidth = w; fctx.strokeStyle = c; fctx.beginPath();
-    for (let k = 0; k < 3; k++) { const an = k * Math.PI / 3 + Math.PI / 2, dx = Math.cos(an) * r, dy = Math.sin(an) * r; fctx.moveTo(x - dx, y - dy); fctx.lineTo(x + dx, y + dy); }
-    fctx.stroke();
+  // soften the coarse grid: two 3x3 box-blur passes on the haze alpha
+  for (let pass = 0; pass < 2; pass++) {
+    B.fill(0);
+    for (let y = 0; y < MH; y++) for (let x = 0; x < MW; x++) {
+      let sum = 0;
+      for (let dy = -1; dy <= 1; dy++) { const yy = y + dy; if (yy < 0 || yy >= MH) continue; const r = yy * MW; for (let dx = -1; dx <= 1; dx++) { const xx = x + dx; if (xx >= 0 && xx < MW) sum += A[r + xx]; } }
+      B[y * MW + x] = sum / 9;
+    }
+    A.set(B);
   }
+  for (let q = 0, i = 0; q < N; q++, i += 4) { hp[i] = 230; hp[i + 1] = 238; hp[i + 2] = 255; hp[i + 3] = A[q]; }
+  hctx.putImageData(hz, 0, 0);
+  want = Math.min(innerWidth < 600 ? 900 : 1500, Math.round(want * 0.45));
 }
-function drawPellet(x, y, r) {
-  fctx.beginPath(); fctx.moveTo(x, y - r); fctx.lineTo(x + r * 0.8, y); fctx.lineTo(x, y + r); fctx.lineTo(x - r * 0.8, y); fctx.closePath();
-  fctx.fillStyle = 'rgba(255,214,236,.97)'; fctx.fill();
-  fctx.lineWidth = 1.4; fctx.strokeStyle = 'rgba(40,8,24,.75)'; fctx.stroke();
+function spawn(p) {
+  for (let tries = 0; tries < 12; tries++) {
+    const n = (Math.random() * wetN) | 0;
+    if (Math.random() > wetW[n] + 0.02) continue;
+    const cell = wetIdx[n], I = wetI[n], ty = wetT[n];
+    p.x = (cell % MW + Math.random()) * MS; p.y = (((cell / MW) | 0) + Math.random()) * MS;
+    p.I = I; p.ty = ty; p.age = 0;
+    if (ty === 1) { p.life = 1.5 + Math.random() * 1.5; p.vy = 22 + I * 38 + Math.random() * 10; p.r = 1.1 + I * 1.8 + Math.random() * 0.6; p.ph = Math.random() * 6.28; }
+    else if (ty === 2) { p.life = 0.3 + Math.random() * 0.25; p.vy = 300 + I * 200; }
+    else { p.life = 0.25 + Math.random() * 0.25; p.vy = 420 + I * 780 + Math.random() * 80; p.len = 7 + I * 24; }
+    p.y -= p.vy * p.life * 0.5;
+    return true;
+  }
+  return false;
 }
-const LAYOUT = [[[0, 0]], [[-5, -2], [5, 3]], [[-7, 3], [0, -5], [7, 3]]];
-function drawIcons() {
+function addBolt() {
+  const cell = stormIdx[(Math.random() * stormN) | 0];
+  const x = (cell % MW + 0.5) * MS, y = (((cell / MW) | 0) + 0.5) * MS;
+  const pts = [[x + (Math.random() - 0.5) * 30, y - 80 - Math.random() * 40]];
+  const segs = 6 + ((Math.random() * 3) | 0);
+  for (let k = 1; k <= segs; k++) { const f = k / segs; pts.push([pts[0][0] + (x - pts[0][0]) * f + (Math.random() - 0.5) * 22 * (1 - f * 0.5), pts[0][1] + (y - pts[0][1]) * f]); }
+  const bi = 2 + ((Math.random() * 3) | 0), b0 = pts[bi], branch = [b0, [b0[0] + 14 + Math.random() * 10, b0[1] + 16], [b0[0] + 20 + Math.random() * 14, b0[1] + 34]];
+  bolts.push({x, y, pts, branch, t: 0});
+}
+function frame(ts) {
+  requestAnimationFrame(frame);
+  const dt = Math.min(0.05, (ts - fxLast) / 1000 || 0); fxLast = ts;
+  if (document.hidden) return;
+  if (fxDirty && !fxPause && ts - fxBuilt > 120) { fxDirty = false; fxBuilt = ts; rebuild(); }
   fctx.setTransform(DPR, 0, 0, DPR, 0, 0);
   fctx.clearRect(0, 0, innerWidth, innerHeight);
-  if (!fxOn || fxPause || !wetN || !frames[cur]) return;
-  const size = map.getSize(), mr = map.getContainer().getBoundingClientRect();
-  const o = map.containerPointToLayerPoint([0, 0]).add(map.getPixelOrigin());
-  const wet = new Float32Array(MW * MH).fill(-1);
-  for (let n = 0; n < wetN; n++) wet[wetIdx[n]] = wetI[n];
-  const T = frames[cur].t, R = Math.max(1, Math.round(S * 0.32 / MS));
-  for (let wy = Math.floor(o.y / S) * S; wy < o.y + size.y + S; wy += S) {
-    const shift = (Math.round(wy / S) & 1) ? S / 2 : 0;
-    for (let wxp = Math.floor(o.x / S) * S - S; wxp < o.x + size.x + S; wxp += S) {
-      const cx = wxp + shift - o.x, cy = wy - o.y;
-      if (cx < -10 || cy < -10 || cx > size.x + 10 || cy > size.y + 10) continue;
-      const mx = Math.round(cx / MS), my = Math.round(cy / MS);
-      let hit = 0, tot = 0, sum = 0;
-      for (let dy = -R; dy <= R; dy++) for (let dx = -R; dx <= R; dx++) {
-        const xx = mx + dx, yy = my + dy; if (xx < 0 || yy < 0 || xx >= MW || yy >= MH) continue;
-        tot++; const v = wet[yy * MW + xx]; if (v >= 0) { hit++; sum += v; }
+  if (fxPause || !anchor || map.getZoom() !== buildZoom) return;
+  const mr = map.getContainer().getBoundingClientRect(), cp = map.latLngToContainerPoint(anchor);
+  const ox = mr.left + cp.x, oy = mr.top + cp.y;
+  if (!showColor && wetN) { fctx.imageSmoothingEnabled = true; fctx.imageSmoothingQuality = 'high'; fctx.drawImage(haze, ox, oy, MW * MS, MH * MS); }
+  if (reduce) return;
+  while (parts.length < want) { const p = {}; if (!spawn(p)) break; p.age = Math.random() * p.life; parts.push(p); }
+  if (parts.length > want) parts.length = want;
+  fctx.lineCap = 'round';
+  for (const p of parts) {
+    p.age += dt;
+    if (p.age >= p.life) {
+      if (p.ty === 0 && p.I > 0.4 && Math.random() < 0.4 && splashes.length < 200) splashes.push({x: p.x, y: p.y, a: 0});
+      if (!wetN || !spawn(p)) { p.life = 1e9; continue; }
+    }
+    const f = p.age / p.life, fade = Math.min(1, f * 6, (1 - f) * 4);
+    p.y += p.vy * dt;
+    if (p.ty === 1) {
+      const sx = ox + p.x + Math.sin(p.ph + p.age * 2.2) * 4, sy = oy + p.y;
+      fctx.fillStyle = `rgba(20,28,40,${0.5 * fade})`; fctx.beginPath(); fctx.arc(sx, sy, p.r + 1, 0, 6.283); fctx.fill();
+      fctx.fillStyle = `rgba(250,252,255,${fade})`; fctx.beginPath(); fctx.arc(sx, sy, p.r, 0, 6.283); fctx.fill();
+    } else if (p.ty === 2) {
+      fctx.fillStyle = `rgba(255,236,246,${fade})`; fctx.fillRect(ox + p.x - 1.2, oy + p.y - 1.2, 2.6, 2.6);
+    } else {
+      p.x -= p.vy * 0.16 * dt;
+      const x = ox + p.x, y = oy + p.y;
+      fctx.strokeStyle = `rgba(232,242,255,${(0.55 + p.I * 0.45) * fade})`;
+      fctx.lineWidth = 1.1 + p.I * 1.7;
+      fctx.beginPath(); fctx.moveTo(x, y); fctx.lineTo(x + p.len * 0.16, y - p.len); fctx.stroke();
+    }
+  }
+  fctx.lineWidth = 1;
+  for (let i = splashes.length - 1; i >= 0; i--) {
+    const s = splashes[i]; s.a += dt * 4;
+    if (s.a >= 1) { splashes.splice(i, 1); continue; }
+    fctx.strokeStyle = `rgba(225,238,255,${0.6 * (1 - s.a)})`;
+    fctx.beginPath(); fctx.ellipse(ox + s.x, oy + s.y, 1 + s.a * 5, 0.5 + s.a * 2, 0, 0, 6.283); fctx.stroke();
+  }
+  // lightning
+  if (stormN && Math.random() < Math.min(3, 0.5 + stormN / 50) * dt && bolts.length < 4) addBolt();
+  for (let i = bolts.length - 1; i >= 0; i--) {
+    const b = bolts[i]; b.t += dt;
+    if (b.t > 0.45) { bolts.splice(i, 1); continue; }
+    const t = b.t, a = t < 0.05 ? 1 : t < 0.1 ? 0.25 : t < 0.16 ? 0.85 : Math.max(0, 1 - (t - 0.16) / 0.29);
+    const gx = ox + b.x, gy = oy + b.y, gr = fctx.createRadialGradient(gx, gy, 0, gx, gy, 110);
+    gr.addColorStop(0, `rgba(255,255,255,${0.42 * a})`); gr.addColorStop(1, 'rgba(255,255,255,0)');
+    fctx.fillStyle = gr; fctx.fillRect(gx - 110, gy - 110, 220, 220);
+    if (t < 0.22) {
+      fctx.save(); fctx.shadowColor = 'rgba(200,220,255,.95)'; fctx.shadowBlur = 12;
+      fctx.strokeStyle = `rgba(255,255,255,${a})`; fctx.lineJoin = 'round';
+      for (const [path, w] of [[b.pts, 2.4], [b.branch, 1.4]]) {
+        fctx.lineWidth = w; fctx.beginPath(); fctx.moveTo(ox + path[0][0], oy + path[0][1]);
+        for (let k = 1; k < path.length; k++) fctx.lineTo(ox + path[k][0], oy + path[k][1]);
+        fctx.stroke();
       }
-      if (!tot || hit / tot < 0.4) continue;
-      const I = sum / hit, lvl = I < 0.4 ? 0 : I < 0.7 ? 1 : 2;
-      const ty = typeAt(cx, cy, T), x = mr.left + cx, y = mr.top + cy;
-      for (const [dx, dy] of LAYOUT[lvl]) {
-        if (ty === 1) drawFlake(x + dx * 1.2, y + dy * 1.2, lvl ? 5.5 : 6.5);
-        else if (ty === 2) drawPellet(x + dx, y + dy, 4.5);
-        else drawDrop(x + dx, y + dy, lvl ? 3.6 : 4.4);
-      }
+      fctx.restore();
     }
   }
 }
-function loop(ts) {
-  requestAnimationFrame(loop);
-  if (document.hidden || !fxDirty || ts - fxBuilt < 120) return;
-  fxDirty = false; fxBuilt = ts;
-  if (fxOn && !fxPause) buildMask();
-  drawIcons();
-}
-requestAnimationFrame(loop);
+requestAnimationFrame(frame);
 
 /* ---------- boot ---------- */
 (async () => {
